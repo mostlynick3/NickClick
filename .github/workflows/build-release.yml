@@ -1,0 +1,87 @@
+name: Build and Release
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Windows-only: NickClick relies on Windows behaviour (winsound,
+    # ctypes.windll DPI awareness, `keyboard` hotkeys) and full Linux
+    # parity across distros/windowing systems is not guaranteed.
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pyautogui pynput psutil sv-ttk tkcalendar keyboard pillow
+
+      - name: Build binary with PyInstaller
+        run: pyinstaller --noconfirm --onefile --windowed --name NickClick --icon icon.ico --collect-data sv_ttk --collect-data tkcalendar NickClick.py
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          mv dist/NickClick.exe release-assets/NickClick-windows.exe
+          ls -lh release-assets/
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NickClick-windows
+          path: release-assets/*
+          if-no-files-found: error
+
+  release:
+    # Only build binaries into a GitHub Release for main;
+    # all other branches/PRs still run the `build` job above as CI validation.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -exec cp {} release-assets/ \;
+          ls -lhR release-assets/
+
+      - name: Generate tag
+        id: tag
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          echo "tag=build-${{ github.run_number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Build ${{ steps.tag.outputs.tag }}
+          body: |
+            Automated build for commit ${{ github.sha }}.
+
+            - Commit: ${{ github.event.head_commit.message }}
+            - Branch: ${{ github.ref_name }}
+            - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Assets:
+            - `NickClick-windows.exe` — Windows binary (Windows-only build)
+          files: release-assets/*
+          make_latest: true
